@@ -100,10 +100,3 @@ Confirm a pending "all" purge operation.
 **Delete Delay**: Delay between deletions (default: 200ms). Adjust if you encounter rate limits.
 
 Access: Vencord Settings → Plugins → PurgeMessages
-
-## Notes
-
-- "All" operations require confirmation via `/vpurge confirm`
-- Use Developer Mode to easily copy message IDs
-- Only one purge can run per channel at a time
-
