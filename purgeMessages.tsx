@@ -29,6 +29,7 @@ interface PendingConfirmation {
     count: number;
     userId?: string;
     mode: "self" | "user";
+    excludeIds?: Set<string>;
 }
 
 // State management
@@ -39,6 +40,17 @@ const activeScans = new Map<string, { stop: boolean }>();
 // Helper function to sleep
 async function sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Parse exclude message IDs from string (comma or space separated)
+function parseExcludeIds(excludeStr: string | undefined): Set<string> {
+    const excludeSet = new Set<string>();
+    if (!excludeStr) return excludeSet;
+    
+    // Split by comma or space, trim whitespace
+    const ids = excludeStr.split(/[, ]+/).map(id => id.trim()).filter(id => id.length > 0);
+    ids.forEach(id => excludeSet.add(id));
+    return excludeSet;
 }
 
 // Check if channel is a DM
@@ -380,7 +392,8 @@ async function discoverMessages(
 async function executePurge(
     channelId: string,
     messages: Message[],
-    canDeleteOthers: boolean
+    canDeleteOthers: boolean,
+    excludeIds?: Set<string>
 ): Promise<{ deleted: number; failed: number }> {
     const purge = activePurges.get(channelId);
     if (!purge) {
@@ -396,6 +409,11 @@ async function executePurge(
         // Check if purge was stopped
         if (purge.stop) {
             break;
+        }
+
+        // Skip excluded messages
+        if (excludeIds && excludeIds.has(msg.id)) {
+            continue;
         }
 
         // Check if we can delete this message
@@ -462,6 +480,12 @@ export default definePlugin({
                             description: "Message ID to delete messages before (optional)",
                             type: ApplicationCommandOptionType.STRING,
                             required: false
+                        },
+                        {
+                            name: "exclude",
+                            description: "Message ID(s) to exclude from deletion (comma-separated)",
+                            type: ApplicationCommandOptionType.STRING,
+                            required: false
                         }
                     ]
                 },
@@ -493,6 +517,12 @@ export default definePlugin({
                             description: "Message ID to delete messages before (optional)",
                             type: ApplicationCommandOptionType.STRING,
                             required: false
+                        },
+                        {
+                            name: "exclude",
+                            description: "Message ID(s) to exclude from deletion (comma-separated)",
+                            type: ApplicationCommandOptionType.STRING,
+                            required: false
                         }
                     ]
                 },
@@ -510,6 +540,12 @@ export default definePlugin({
                         {
                             name: "before",
                             description: "Message ID to delete messages before (optional, creates a range)",
+                            type: ApplicationCommandOptionType.STRING,
+                            required: false
+                        },
+                        {
+                            name: "exclude",
+                            description: "Message ID(s) to exclude from deletion (comma-separated)",
                             type: ApplicationCommandOptionType.STRING,
                             required: false
                         }
@@ -531,6 +567,12 @@ export default definePlugin({
                             description: "Message ID to delete messages after (optional, creates a range)",
                             type: ApplicationCommandOptionType.STRING,
                             required: false
+                        },
+                        {
+                            name: "exclude",
+                            description: "Message ID(s) to exclude from deletion (comma-separated)",
+                            type: ApplicationCommandOptionType.STRING,
+                            required: false
                         }
                     ]
                 },
@@ -541,11 +583,27 @@ export default definePlugin({
                     options: [
                         {
                             name: "count",
-                            description: "Number of messages to delete",
-                            type: ApplicationCommandOptionType.INTEGER,
-                            required: true,
-                            minValue: 1,
-                            maxValue: 100
+                            description: "Number of messages to delete or 'all'",
+                            type: ApplicationCommandOptionType.STRING,
+                            required: false
+                        },
+                        {
+                            name: "after",
+                            description: "Message ID to delete messages after (optional)",
+                            type: ApplicationCommandOptionType.STRING,
+                            required: false
+                        },
+                        {
+                            name: "before",
+                            description: "Message ID to delete messages before (optional)",
+                            type: ApplicationCommandOptionType.STRING,
+                            required: false
+                        },
+                        {
+                            name: "exclude",
+                            description: "Message ID(s) to exclude from deletion (comma-separated)",
+                            type: ApplicationCommandOptionType.STRING,
+                            required: false
                         }
                     ]
                 },
@@ -573,7 +631,7 @@ export default definePlugin({
                     const confirmation = pendingConfirmations.get(channelId);
                     if (!confirmation) {
                         sendBotMessage(channelId, {
-                            content: "No pending confirmation found. Use '/vpurge self all' or '/vpurge user [user] all' first."
+                            content: "No pending confirmation found. Use '/vpurge self all', '/vpurge user [user] all', or '/vpurge any all' first."
                         });
                         return;
                     }
@@ -598,11 +656,16 @@ export default definePlugin({
 
                     try {
                         const messages = await discoverMessages(channelId, {
-                            userId: confirmation.userId,
+                            userId: confirmation.userId || undefined,
                             limit: confirmation.count
                         });
 
-                        if (messages.length === 0) {
+                        // Filter excluded messages if any
+                        const filteredMessages = confirmation.excludeIds && confirmation.excludeIds.size > 0
+                            ? messages.filter(msg => !confirmation.excludeIds!.has(msg.id))
+                            : messages;
+
+                        if (filteredMessages.length === 0) {
                             activePurges.delete(channelId);
                             sendBotMessage(channelId, {
                                 content: "No messages found to delete."
@@ -611,7 +674,7 @@ export default definePlugin({
                         }
 
                         const canDeleteOthers = canManageMessages(channelId);
-                        const result = await executePurge(channelId, messages, canDeleteOthers);
+                        const result = await executePurge(channelId, filteredMessages, canDeleteOthers, confirmation.excludeIds);
 
                         activePurges.delete(channelId);
                         sendBotMessage(channelId, {
@@ -640,6 +703,8 @@ export default definePlugin({
                     const countStr = getSubcommandOption("count") as string | undefined;
                     const afterId = getSubcommandOption("after") as string | undefined;
                     const beforeId = getSubcommandOption("before") as string | undefined;
+                    const excludeStr = getSubcommandOption("exclude") as string | undefined;
+                    const excludeIds = parseExcludeIds(excludeStr);
 
                     // Check if using before/after options
                     if (afterId || beforeId) {
@@ -676,7 +741,7 @@ export default definePlugin({
                                 return;
                             }
 
-                            const result = await executePurge(channelId, messages, false);
+                            const result = await executePurge(channelId, messages, false, excludeIds);
 
                             activePurges.delete(channelId);
                             sendBotMessage(channelId, {
@@ -729,7 +794,10 @@ export default definePlugin({
                                 }
                             }
                         }).then((messages) => {
-                            if (messages.length === 0) {
+                            // Filter excluded messages
+                            const filteredMessages = messages.filter(msg => !excludeIds.has(msg.id));
+                            
+                            if (filteredMessages.length === 0) {
                                 sendBotMessage(channelId, {
                                     content: "No messages found to delete."
                                 });
@@ -737,13 +805,14 @@ export default definePlugin({
                             }
 
                             pendingConfirmations.set(channelId, {
-                                count: messages.length,
+                                count: filteredMessages.length,
                                 userId: currentUserId,
-                                mode: "self"
+                                mode: "self",
+                                excludeIds: excludeIds
                             });
 
                             sendBotMessage(channelId, {
-                                content: `Scanning complete! Found ${messages.length} message(s). You are going to delete ${messages.length} number of messages. Confirm with "/vpurge confirm"`
+                                content: `Scanning complete! Found ${filteredMessages.length} message(s). You are going to delete ${filteredMessages.length} number of messages. Confirm with "/vpurge confirm"`
                             });
                         }).catch((error) => {
                             activeScans.delete(channelId);
@@ -779,7 +848,7 @@ export default definePlugin({
                                 return;
                             }
 
-                            const result = await executePurge(channelId, messages, false);
+                            const result = await executePurge(channelId, messages, false, excludeIds);
 
                             activePurges.delete(channelId);
                             sendBotMessage(channelId, {
@@ -830,6 +899,8 @@ export default definePlugin({
                     const countStr = getSubcommandOption("count") as string | undefined;
                     const afterId = getSubcommandOption("after") as string | undefined;
                     const beforeId = getSubcommandOption("before") as string | undefined;
+                    const excludeStr = getSubcommandOption("exclude") as string | undefined;
+                    const excludeIds = parseExcludeIds(excludeStr);
 
                     // Check if using before/after options
                     if (afterId || beforeId) {
@@ -866,7 +937,7 @@ export default definePlugin({
                                 return;
                             }
 
-                            const result = await executePurge(channelId, messages, true);
+                            const result = await executePurge(channelId, messages, true, excludeIds);
 
                             activePurges.delete(channelId);
                             sendBotMessage(channelId, {
@@ -919,7 +990,10 @@ export default definePlugin({
                                 }
                             }
                         }).then((messages) => {
-                            if (messages.length === 0) {
+                            // Filter excluded messages
+                            const filteredMessages = messages.filter(msg => !excludeIds.has(msg.id));
+                            
+                            if (filteredMessages.length === 0) {
                                 sendBotMessage(channelId, {
                                     content: "No messages found to delete."
                                 });
@@ -927,13 +1001,14 @@ export default definePlugin({
                             }
 
                             pendingConfirmations.set(channelId, {
-                                count: messages.length,
+                                count: filteredMessages.length,
                                 userId: targetUserId,
-                                mode: "user"
+                                mode: "user",
+                                excludeIds: excludeIds
                             });
 
                             sendBotMessage(channelId, {
-                                content: `Scanning complete! Found ${messages.length} message(s). You are going to delete ${messages.length} number of messages. Confirm with "/vpurge confirm"`
+                                content: `Scanning complete! Found ${filteredMessages.length} message(s). You are going to delete ${filteredMessages.length} number of messages. Confirm with "/vpurge confirm"`
                             });
                         }).catch((error) => {
                             activeScans.delete(channelId);
@@ -969,7 +1044,7 @@ export default definePlugin({
                                 return;
                             }
 
-                            const result = await executePurge(channelId, messages, true);
+                            const result = await executePurge(channelId, messages, true, excludeIds);
 
                             activePurges.delete(channelId);
                             sendBotMessage(channelId, {
@@ -1000,43 +1075,164 @@ export default definePlugin({
                         return;
                     }
 
-                    const count = getSubcommandOption("count") as number;
-                    if (!count || count < 1) {
-                        sendBotMessage(channelId, {
-                            content: "Invalid count. Please provide a number greater than 0."
-                        });
-                        return;
-                    }
+                    const countStr = getSubcommandOption("count") as string | undefined;
+                    const afterId = getSubcommandOption("after") as string | undefined;
+                    const beforeId = getSubcommandOption("before") as string | undefined;
+                    const excludeStr = getSubcommandOption("exclude") as string | undefined;
+                    const excludeIds = parseExcludeIds(excludeStr);
 
-                    // Start purge
-                    const purge: ActivePurge = { stop: false, deleted: 0, failed: 0 };
-                    activePurges.set(channelId, purge);
-
-                    try {
-                        const messages = await discoverMessages(channelId, {
-                            limit: count
-                        });
-
-                        if (messages.length === 0) {
-                            activePurges.delete(channelId);
+                    // Check if using before/after options
+                    if (afterId || beforeId) {
+                        // Prohibit using count with before/after
+                        if (countStr) {
                             sendBotMessage(channelId, {
-                                content: "No messages found to delete."
+                                content: "Cannot use 'count' together with 'before' or 'after' options. Use either count or before/after, not both."
                             });
                             return;
                         }
 
-                        const result = await executePurge(channelId, messages, canDeleteOthers);
+                        // Start purge
+                        const purge: ActivePurge = { stop: false, deleted: 0, failed: 0 };
+                        activePurges.set(channelId, purge);
 
-                        activePurges.delete(channelId);
+                        const rangeText = afterId && beforeId
+                            ? `between message ID ${afterId} and ${beforeId}`
+                            : afterId
+                            ? `after message ID ${afterId}`
+                            : `before message ID ${beforeId}`;
+
+                        try {
+                            const messages = await discoverMessages(channelId, {
+                                afterId: afterId,
+                                beforeId: beforeId
+                            });
+
+                            if (messages.length === 0) {
+                                activePurges.delete(channelId);
+                                sendBotMessage(channelId, {
+                                    content: `No messages found to delete ${rangeText}.`
+                                });
+                                return;
+                            }
+
+                            const result = await executePurge(channelId, messages, canDeleteOthers, excludeIds);
+
+                            activePurges.delete(channelId);
+                            sendBotMessage(channelId, {
+                                content: `Successfully deleted ${result.deleted} message(s).${result.failed > 0 ? ` Failed to delete ${result.failed} message(s).` : ""}`
+                            });
+                        } catch (error) {
+                            activePurges.delete(channelId);
+                            console.error("[PurgeMessages] Error during purge:", error);
+                            sendBotMessage(channelId, {
+                                content: `An error occurred during purge: ${error instanceof Error ? error.message : String(error)}`
+                            });
+                        }
+                        return;
+                    }
+
+                    // Handle count-based purge
+                    if (!countStr) {
                         sendBotMessage(channelId, {
-                            content: `Successfully deleted ${result.deleted} message(s).${result.failed > 0 ? ` Failed to delete ${result.failed} message(s).` : ""}`
+                            content: "Please provide either a count ('all' or number) or use 'after'/'before' options."
                         });
-                    } catch (error) {
-                        activePurges.delete(channelId);
-                        console.error("[PurgeMessages] Error during purge:", error);
+                        return;
+                    }
+
+                    const isAll = countStr.toLowerCase() === "all";
+
+                    if (isAll) {
+                        // Start discovery with real-time updates
                         sendBotMessage(channelId, {
-                            content: `An error occurred during purge: ${error instanceof Error ? error.message : String(error)}`
+                            content: "Scanning messages... (0 found so far)"
                         });
+
+                        // Track scan state so it can be stopped
+                        activeScans.set(channelId, { stop: false });
+
+                        // Track last update time to throttle updates
+                        let lastUpdateTime = 0;
+                        const updateInterval = 2000; // Update every 2 seconds max
+                        
+                        // Run discovery asynchronously so user can still type
+                        discoverMessages(channelId, {
+                            onProgress: (count) => {
+                                // Update progress every 2 seconds or every 100 messages, whichever comes first
+                                const now = Date.now();
+                                if (count % 100 === 0 || count === 1 || (now - lastUpdateTime) >= updateInterval) {
+                                    sendBotMessage(channelId, {
+                                        content: `Scanning messages... (${count} found so far)`
+                                    });
+                                    lastUpdateTime = now;
+                                }
+                            }
+                        }).then((messages) => {
+                            // Filter excluded messages
+                            const filteredMessages = messages.filter(msg => !excludeIds.has(msg.id));
+                            
+                            if (filteredMessages.length === 0) {
+                                sendBotMessage(channelId, {
+                                    content: "No messages found to delete."
+                                });
+                                return;
+                            }
+
+                            pendingConfirmations.set(channelId, {
+                                count: filteredMessages.length,
+                                userId: undefined, // any command doesn't filter by user
+                                mode: "self", // Use "self" mode but it doesn't matter since userId is undefined
+                                excludeIds: excludeIds
+                            });
+
+                            sendBotMessage(channelId, {
+                                content: `Scanning complete! Found ${filteredMessages.length} message(s). You are going to delete ${filteredMessages.length} number of messages. Confirm with "/vpurge confirm"`
+                            });
+                        }).catch((error) => {
+                            activeScans.delete(channelId);
+                            console.error("[PurgeMessages] Error discovering messages:", error);
+                            sendBotMessage(channelId, {
+                                content: `An error occurred while discovering messages: ${error instanceof Error ? error.message : String(error)}`
+                            });
+                        });
+                    } else {
+                        const count = parseInt(countStr, 10);
+                        if (isNaN(count) || count < 1) {
+                            sendBotMessage(channelId, {
+                                content: "Invalid count. Please provide a number greater than 0 or 'all'."
+                            });
+                            return;
+                        }
+
+                        // Start purge immediately
+                        const purge: ActivePurge = { stop: false, deleted: 0, failed: 0 };
+                        activePurges.set(channelId, purge);
+
+                        try {
+                            const messages = await discoverMessages(channelId, {
+                                limit: count
+                            });
+
+                            if (messages.length === 0) {
+                                activePurges.delete(channelId);
+                                sendBotMessage(channelId, {
+                                    content: "No messages found to delete."
+                                });
+                                return;
+                            }
+
+                            const result = await executePurge(channelId, messages, canDeleteOthers, excludeIds);
+
+                            activePurges.delete(channelId);
+                            sendBotMessage(channelId, {
+                                content: `Successfully deleted ${result.deleted} message(s).${result.failed > 0 ? ` Failed to delete ${result.failed} message(s).` : ""}`
+                            });
+                        } catch (error) {
+                            activePurges.delete(channelId);
+                            console.error("[PurgeMessages] Error during purge:", error);
+                            sendBotMessage(channelId, {
+                                content: `An error occurred during purge: ${error instanceof Error ? error.message : String(error)}`
+                            });
+                        }
                     }
                     return;
                 }
@@ -1045,6 +1241,8 @@ export default definePlugin({
                 if (subcommand === "after") {
                     const messageId = getSubcommandOption("message_id") as string;
                     const beforeId = getSubcommandOption("before") as string | undefined;
+                    const excludeStr = getSubcommandOption("exclude") as string | undefined;
+                    const excludeIds = parseExcludeIds(excludeStr);
                     
                     if (!messageId) {
                         sendBotMessage(channelId, {
@@ -1081,7 +1279,7 @@ export default definePlugin({
                             return;
                         }
 
-                        const result = await executePurge(channelId, messages, canDeleteOthers);
+                        const result = await executePurge(channelId, messages, canDeleteOthers, excludeIds);
 
                         activePurges.delete(channelId);
                         sendBotMessage(channelId, {
@@ -1101,6 +1299,8 @@ export default definePlugin({
                 if (subcommand === "before") {
                     const messageId = getSubcommandOption("message_id") as string;
                     const afterId = getSubcommandOption("after") as string | undefined;
+                    const excludeStr = getSubcommandOption("exclude") as string | undefined;
+                    const excludeIds = parseExcludeIds(excludeStr);
                     
                     if (!messageId) {
                         sendBotMessage(channelId, {
@@ -1140,7 +1340,7 @@ export default definePlugin({
                             return;
                         }
 
-                        const result = await executePurge(channelId, messages, canDeleteOthers);
+                        const result = await executePurge(channelId, messages, canDeleteOthers, excludeIds);
 
                         activePurges.delete(channelId);
                         sendBotMessage(channelId, {
