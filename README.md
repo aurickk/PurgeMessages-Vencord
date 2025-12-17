@@ -1,6 +1,9 @@
 # PurgeMessages Plugin
 
-A Vencord plugin for automated message deletion with bulk delete functionality.
+A Vencord plugin that addes `/vpurge` commands directly to Discord to automated bulk message deletion.
+
+> [!WARNING]
+> This plugin violates Discord's Terms of Service. Using client modifications and automating message actions can result in account termination. Use at your own risk.
 
 ## Installation
 
@@ -29,7 +32,7 @@ pnpm inject
 
 [Offical Vencord custom plugin installation guide](https://docs.vencord.dev/installing/custom-plugins/)
 
-## Commands
+## Usage
 
 ### `/vpurge self [count] [after] [before]`
 Delete your own messages.
