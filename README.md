@@ -19,7 +19,7 @@ pnpm install --frozen-lockfile
 ```
 3. Navigate to the `src` folder in the cloned Vencord repository, create a new folder called `userplugins` if it dosen't already exist.
 
-3. Download `purgeMessages.tsx` from the repo and move it to the `userplugins` folder.
+3. Download `purgeMessages.tsx` from the repository and move it to the `userplugins` folder.
 
 4. Build Vencord and inject Discord:
 
